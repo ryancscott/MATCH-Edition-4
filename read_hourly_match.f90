@@ -17,11 +17,12 @@
 !     to read the data the from appropriate ASDC_archive dir on AMI.
 !     To do this, need to use PCF, etc. .......?
 ! 
-! (2) Combine constituents & extract what's needed for Fu-Liou 
+! (2) DONE: Combine AODS into 7 types 
 !
 ! (3) DONE: Match the aerosol data to specific CERES FOVs ?
 !     This include HOUR time step and LAT/LON
 !
+! (4) Modify vertical profiles for input to Fu-Liou (%s)
 !===================================================================
 program read_hourly_match 
  
@@ -48,9 +49,10 @@ integer :: i, j, p, k, t         ! loop indices
 ! Artificial data
 ! Extract MATCH data at the time and location of each SSF FOV
 ! CERES fov lat, lon, hr - these will need to be read in
-real :: fov_lon = -145
-real :: fov_lat = -20
-integer :: fov_hr = 0
+real :: fov_lon
+real :: fov_lat
+integer :: fov_hr
+integer ::  mfov_hr     ! match fov hr = ceres fov hr + 1
 
 !=====================================================
 
@@ -62,7 +64,7 @@ character*7 aero_type11(11)                 ! aerosol profile type label, 11 con
 character*7 aero_type7(7)                   ! aerosol profile type label, 7 constituents obtained by combining categories
 end type mavptype
 
-type (mavptype) mpro                        ! MATCH profile data structure
+type (mavptype) mavp                        ! MATCH profile data structure
  
 ! MATCH aerosol optical depth (AOD) data structure
 type aodtype
@@ -77,10 +79,17 @@ type (aodtype) aod                          ! AOD data structure
 integer :: iprofvarid(1:11)                 ! integer aerosol profile variable id, 11 aerosol types
 integer :: iaodvarid(1:12)                  ! integer aod variable id, total + 11 aerosol types
        
+write(*,*) "Enter CERES FOV longitude:"
+read(*,*) fov_lon
+write(*,*) "Enter CERES FOV latitude:"
+read(*,*) fov_lat
+write(*,*) "Enter CERES hour:"
+read(*,*) fov_hr
+
 !=====================================================
 
 ! aerosol type strings
-data mpro%aero_type11 / &
+data mavp%aero_type11 / &
 'DSTQ01',        & !1                                                                                                                 
 'DSTQ02',        & !2                                           
 'DSTQ03',        & !3                                                                                                                  
@@ -138,7 +147,7 @@ call check( nf90_get_var(ncid,latvarid, lat) )
 call check( nf90_get_var(ncid,pvarid, plev) )
 
 !********************************************************************************************************
-! dimensions are reversed in the netCDF file - this line is old but left here FYI
+! dimensions are reversed in the netCDF file - this code is old but left here FYI
 !call check( nf90_get_var(ncid, varid1, data3d, start=(/1,1,1/), count=(/nlon,nlat,ntime/) ) )
 !call check( nf90_get_var(ncid, varid2, data4d, start=(/1,1,1,1/), count=(/nlon,nlat,nlev,ntime/) ) )
 !********************************************************************************************************
@@ -146,10 +155,10 @@ call check( nf90_get_var(ncid,pvarid, plev) )
 ! read aerosol vertical profiles
 do i = 1,11
   ! get variable ids for each aerosol-type profile
-  call check( nf90_inq_varid(ncid, mpro%aero_type11(i), iprofvarid(i) ) )
-  print*, "Getting...", mpro%aero_type11(i)," variable id...", iprofvarid(i)
+  call check( nf90_inq_varid(ncid, mavp%aero_type11(i), iprofvarid(i) ) )
+  print*, "Getting...", mavp%aero_type11(i)," variable id...", iprofvarid(i)
   ! get vertical aerosol profiles for each type and store in single 5-d array
-  call check( nf90_get_var(ncid, iprofvarid(i), mpro%aero_prof(i,:,:,:,:), start=(/1,1,1,1/), count=(/nlon,nlat,nlev,ntime/) ) )
+  call check( nf90_get_var(ncid, iprofvarid(i), mavp%aero_prof(i,:,:,:,:), start=(/1,1,1,1/), count=(/nlon,nlat,nlev,ntime/) ) )
 end do
 
 ! read AODs
@@ -163,7 +172,7 @@ end do
 
 print*, "===================================="
 print*, " Successfully read 4D & 5D data..."
-print*, " AOD(type,nlon,nlat,ntime)          "
+print*, " AerosOD(type,nlon,nlat,ntime)          "
 print*, " Profile(type,nlon,nlat,nlev,ntime) "
 print*, "===================================="
 
@@ -189,11 +198,11 @@ do t = 1,11            ! aerosol type
   do i = 31,31         ! longitude
      do j = 31,31      ! latitude
         do k = 1,1     ! time
-          print*, "============================================================================"
-          print*, "Hour:",k, "Type:  ",mpro%aero_type11(t), "VarID:  ",iaodvarid(t)
-          print*, "============================================================================"
+          print*, "========================================================================================="
+          print*, "Hour:",k, "Type:  ",mavp%aero_type11(t), "VarID:  ",iaodvarid(t)
+          print*, "========================================================================================="
           do p=1,nlev  ! pressure levels
-            print*, "Lon:", lon(i),"Lat:", lat(j), "Pres:",plev(p), "Aero:", mpro%aero_prof(t,i,j,p,k)
+            print*, "Lon:", lon(i),"Lat:", lat(j), "Pres:",plev(p), "Aero:", mavp%aero_prof(t,i,j,p,k)
           end do
         end do
      end do
@@ -205,21 +214,34 @@ print*, "======================================="
 print*, "Combining AODs into 7 types + total AOD"
 print*, "======================================="
 
-aod%aod_array8(1,:,:,:) = SUM(aod%aod_array(2:12,:,:,:),1) !Total - should equal AEROOD
-aod%aod_array8(2,:,:,:) = aod%aod_array(2,:,:,:)           !DustSm
-aod%aod_array8(3,:,:,:) = SUM(aod%aod_array(3:5,:,:,:),1)  !DustLg
-aod%aod_array8(4,:,:,:) = aod%aod_array(6,:,:,:)           !SO4
-aod%aod_array8(5,:,:,:) = aod%aod_array(7,:,:,:)           !SSLT - Sea Salt
-aod%aod_array8(6,:,:,:) = SUM(aod%aod_array(8:9,:,:,:),1)  !SOOT - Black Carbon
-aod%aod_array8(7,:,:,:) = aod%aod_array(10,:,:,:)          !Solub
-aod%aod_array8(8,:,:,:) = aod%aod_array(11,:,:,:)          !Insolub
+mavp%aero_prof7(1,:,:,:,:) = mavp%aero_prof(1,:,:,:,:)          ! DustSm
+mavp%aero_prof7(2,:,:,:,:) = sum(mavp%aero_prof(2:4,:,:,:,:),1) ! DustLg
+mavp%aero_prof7(3,:,:,:,:) = mavp%aero_prof(5,:,:,:,:)          ! SO4
+mavp%aero_prof7(4,:,:,:,:) = mavp%aero_prof(6,:,:,:,:)          ! SSLT - Sea Salt
+mavp%aero_prof7(5,:,:,:,:) = sum(mavp%aero_prof(7:8,:,:,:,:),1) ! SOOT - Black Carbon
+mavp%aero_prof7(6,:,:,:,:) = mavp%aero_prof(9,:,:,:,:)          ! Solub
+mavp%aero_prof7(7,:,:,:,:) = mavp%aero_prof(10,:,:,:,:)         ! Insolub
 
+! Need to combine SO4(p<200) with VOLC for stratospheric aerosols
+! Need to combine SO4(p>200) with Solub in troposphere
+! See MATCH_ed4_hourly_SYNI.f90 under /homedir/frose/...
+
+aod%aod_array8(1,:,:,:) = sum(aod%aod_array(2:12,:,:,:),1) ! Total - should equal AEROOD
+aod%aod_array8(2,:,:,:) = aod%aod_array(2,:,:,:)           ! DustSm
+aod%aod_array8(3,:,:,:) = sum(aod%aod_array(3:5,:,:,:),1)  ! DustLg
+aod%aod_array8(4,:,:,:) = aod%aod_array(6,:,:,:)           ! SO4
+aod%aod_array8(5,:,:,:) = aod%aod_array(7,:,:,:)           ! SSLT - Sea Salt
+aod%aod_array8(6,:,:,:) = sum(aod%aod_array(8:9,:,:,:),1)  ! SOOT - Black Carbon
+aod%aod_array8(7,:,:,:) = aod%aod_array(10,:,:,:)          ! Solub
+aod%aod_array8(8,:,:,:) = aod%aod_array(11,:,:,:)          ! Insolub
+
+! This checks out ok to within ~8 decimal places
 !print*, "Computed total AOD"
 !print*, aod%aod_array8(1,1:10,1,1)
 !print*, "Read from file"
 !print*, aod%aod_array(1,1:10,1,1)
 
-print*, "======================================"
+print*, "======================================="
 
 print*, "MATCH Latitude centers"
 print*, lat
@@ -228,16 +250,16 @@ print*, "MATCH Longitude centers"
 print*, lon
 
 print*, "MATCH Pressure levels"
-print*, plev
+print*, plev(1:10)
 
 print*, "======================================"
-print*, "Matching MATCH to CERES footprints... "
+print*, "Matching MATCH data to CERES FOV...   "
 print*, "======================================"
-
 
 ! CERES FOV hr is offset from MATCH by 1
-fov_hr = fov_hr + 1
+mfov_hr = fov_hr + 1
 
+print*, "Artificial CERES Hour   :", fov_hr
 print*, "Artificial CERES FOV lon:", fov_lon
 print*, "Artificial CERES FOV lon:", fov_lat
 
@@ -254,13 +276,13 @@ print*, "======================================"
 print*, "Getting aerosol profile at CERES FOV location..."
 
 do t = 1,11              ! aerosol type                                                                                              
-  do k = fov_hr,fov_hr   ! time
-    print*, "============================================================================"
-    print*, "Hour:",k, "Type:  ",mpro%aero_type11(t), "VarID:  ",iaodvarid(t)
-    print*, "============================================================================"
+  do k = mfov_hr,mfov_hr   ! time
+    print*, "========================================================================================="
+    print*, "Hour:",k, "Type:  ",mavp%aero_type11(t), "VarID:  ",iaodvarid(t)
+    print*, "========================================================================================="
     do p=1,nlev  ! pressure levels                                                                                              
       print*, "Lon:", lon(lon_match_ceresfov(fov_lon)),"Lat:", lat(lat_match_ceresfov(fov_lat)), "Pres:",plev(p), "Aero:", &
-                      mpro%aero_prof(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,k)
+                      mavp%aero_prof(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,k)
     end do
   end do
 end do
