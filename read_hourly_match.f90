@@ -15,14 +15,15 @@
 ! 
 ! (1) Instead of reading MATCH file directly from local dir, need 
 !     to read the data the from appropriate ASDC_archive dir on AMI.
-!     To do this, need to use PCF, etc. .......?
+!     To do this, need to use pcf module, etc.
+!     Fred can show me these ins and outs... 
 ! 
 ! (2) DONE: Combine AODS into 7 types 
 !
 ! (3) DONE: Match the aerosol data to specific CERES FOVs ?
 !     This include HOUR time step and LAT/LON
 !
-! (4) Modify vertical profiles for input to Fu-Liou (%s)
+! (4) IN PROGRESS: Modify vertical profiles for input to Fu-Liou
 !===================================================================
 program read_hourly_match 
  
@@ -90,27 +91,27 @@ read(*,*) fov_hr
 
 ! aerosol type strings
 data mavp%aero_type11 / &
-'DSTQ01',        & !1                                                                                                                 
-'DSTQ02',        & !2                                           
-'DSTQ03',        & !3                                                                                                                  
-'DSTQ04',        & !4                                                                                                               
-'SO4'  ,         & !5                                                                                                                
-'SSLT',          & !6                                                                                                              
-'BCPHI',         & !7                                                                                                              
-'BCPHO',         & !8                                                                                             
-'OCPHI',         & !9
-'OCPHO',         & !10
-'VOLC' /           !11
+'DSTQ01',        & !1  Dust small
+'DSTQ02',        & !2  Dust med-small                                          
+'DSTQ03',        & !3  Dust med-large                                                                                          
+'DSTQ04',        & !4  Dust large                                                                                                     
+'SO4'  ,         & !5  Sulfate
+'SSLT',          & !6  Sea salt                                                                                                      
+'BCPHI',         & !7  Hydrophilic black carbon                                                                                  
+'BCPHO',         & !8  Hydrophobic black carbon 
+'OCPHI',         & !9  Hydrophilic organic carbon
+'OCPHO',         & !10 Hydrophobic organic carbon
+'VOLC' /           !11 Volcanic
 
 data aod%aod_type8 / &
-'Total',   &    
-'DustSm',  &
-'DustLg',  &
-'SO4',     &
-'SSLT',    &
-'Soot',    &
-'Solub',   &
-'Insol' /     
+'Total',   &       ! Total AOD
+'DustSm',  &       ! Dust small 
+'DustLg',  &       ! Dust large (med+large)
+'SO4',     &       ! Sulfate
+'SSLT',    &       ! Sea Salt
+'Soot',    &       ! Black carbon
+'Solub',   &       ! Organic carbon 
+'Insol' /          ! Organic 
 
 data aod%aod_type12 / &
 'AEROD',     &
@@ -211,21 +212,36 @@ end do
 
 
 print*, "======================================="
+print*, "Combining Ed4 aerosol profiles...      "
+print*, "======================================="
+
+! 7 species
+mavp%aero_prof7(1,:,:,:,:) = mavp%aero_prof(1,:,:,:,:)                                   ! 1. DustSm
+mavp%aero_prof7(2,:,:,:,:) = sum(mavp%aero_prof(2:4,:,:,:,:),1)                          ! 2. DustLg
+mavp%aero_prof7(4,:,:,:,:) = mavp%aero_prof(6,:,:,:,:)                                   ! 4. SSLT
+mavp%aero_prof7(5,:,:,:,:) = sum(mavp%aero_prof(7:8,:,:,:,:),1)                          ! 5. SOOT = black carbon
+mavp%aero_prof7(7,:,:,:,:) = mavp%aero_prof(10,:,:,:,:)                                  ! 7. Insolub
+
+
+! assumes tropopause is at 200 mb...
+do p=1,nlev
+  ! stratosphere
+  if (p <= 10) then
+    mavp%aero_prof7(3,:,:,p,:) = mavp%aero_prof(5,:,:,p,:) + mavp%aero_prof(11,:,:,p,:) ! 3. SO4(strato)+VOLC
+    mavp%aero_prof7(6,:,:,p,:) = mavp%aero_prof(9,:,:,p,:)                              ! 6. Solub = hydrophilic OC only
+  ! troposphere
+  else if (p > 10) then
+    mavp%aero_prof7(3,:,:,p,:) = mavp%aero_prof(11,:,:,p,:)                             ! 3. VOLC only - zero in troposphere
+    mavp%aero_prof7(6,:,:,p,:) = mavp%aero_prof(9,:,:,p,:) + mavp%aero_prof(5,:,:,p,:)  ! 6. Solub = hydrophilic OC + SO4(tropo)
+  end if
+end do
+
+
+print*, "======================================="
 print*, "Combining AODs into 7 types + total AOD"
 print*, "======================================="
 
-mavp%aero_prof7(1,:,:,:,:) = mavp%aero_prof(1,:,:,:,:)          ! DustSm
-mavp%aero_prof7(2,:,:,:,:) = sum(mavp%aero_prof(2:4,:,:,:,:),1) ! DustLg
-mavp%aero_prof7(3,:,:,:,:) = mavp%aero_prof(5,:,:,:,:)          ! SO4
-mavp%aero_prof7(4,:,:,:,:) = mavp%aero_prof(6,:,:,:,:)          ! SSLT - Sea Salt
-mavp%aero_prof7(5,:,:,:,:) = sum(mavp%aero_prof(7:8,:,:,:,:),1) ! SOOT - Black Carbon
-mavp%aero_prof7(6,:,:,:,:) = mavp%aero_prof(9,:,:,:,:)          ! Solub
-mavp%aero_prof7(7,:,:,:,:) = mavp%aero_prof(10,:,:,:,:)         ! Insolub
-
-! Need to combine SO4(p<200) with VOLC for stratospheric aerosols
-! Need to combine SO4(p>200) with Solub in troposphere
-! See MATCH_ed4_hourly_SYNI.f90 under /homedir/frose/...
-
+! total + 7 species
 aod%aod_array8(1,:,:,:) = sum(aod%aod_array(2:12,:,:,:),1) ! Total - should equal AEROOD
 aod%aod_array8(2,:,:,:) = aod%aod_array(2,:,:,:)           ! DustSm
 aod%aod_array8(3,:,:,:) = sum(aod%aod_array(3:5,:,:,:),1)  ! DustLg
@@ -235,7 +251,8 @@ aod%aod_array8(6,:,:,:) = sum(aod%aod_array(8:9,:,:,:),1)  ! SOOT - Black Carbon
 aod%aod_array8(7,:,:,:) = aod%aod_array(10,:,:,:)          ! Solub
 aod%aod_array8(8,:,:,:) = aod%aod_array(11,:,:,:)          ! Insolub
 
-! This checks out ok to within ~8 decimal places
+! This checks out to ~4 decimal places
+! Printing out only 10 numbers...
 !print*, "Computed total AOD"
 !print*, aod%aod_array8(1,1:10,1,1)
 !print*, "Read from file"
@@ -250,7 +267,7 @@ print*, "MATCH Longitude centers"
 print*, lon
 
 print*, "MATCH Pressure levels"
-print*, plev(1:10)
+print*, plev
 
 print*, "======================================"
 print*, "Matching MATCH data to CERES FOV...   "
