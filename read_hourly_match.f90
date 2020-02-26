@@ -4,7 +4,7 @@
 !
 ! Purpose: This program reads aerosol vertical profiles (kg/kg) and
 !          AOD information from hourly MATCH netCDF files for 11 
-!         different aerosol constituents.
+!          different aerosol constituents.
 !
 !          Artificial CERES FOV lat, lon & swath hour are used
 !          (input by user) to extract necessary aerosol data for 
@@ -51,7 +51,7 @@ use netcdf
 ! no implicit variables
 implicit none
 
-! name of file to be read
+! name of MATCH file to be read
 character (len = *), parameter :: FILE_NAME = "CER_MATCH-hourly_Terra-Aqua-MODIS_Edition4_402402.20190101.nc"
 
 ! dimensions of MATCH data
@@ -60,55 +60,71 @@ integer, parameter :: nlat = 94    ! number of latitude boxes
 integer, parameter :: ntime = 24   ! number of hourly time steps
 integer, parameter :: nlay = 28    ! number of pressure layers
 integer, parameter :: nlev = nlay+1! number of pressure levels
-integer, parameter :: np = 11      ! number of particulate constituents
-real :: play(nlay), plev(nlev)     ! MATCH pressure layers, levels
+integer, parameter :: np = 11      ! number of particle constituents
+integer, parameter :: npc = 7      ! number of particle constituents combined
 real :: lon(nlon), lat(nlat)       ! MATCH grid box lon, lat
+real :: play(nlay), plev(nlev)     ! MATCH pressure layers, levels
+real :: hybi(nlev), hybm(nlay)     ! MATCH sigma coordinates for levels & layer midpoints
 
 ! IDs for file & select variables
-integer :: iplayvarid, iplevvarid  ! integer pressure lay/lev variable ID
-integer :: ilatvarid, ilonvarid    ! integer lat/lon variable ID
-integer :: iprofvarid(1:np)        ! integer aerosol profile variable id, 11 aerosol types                                 
-integer :: iaodvarid(1:np+1)       ! integer aod variable id, total + 11 aerosol types 
+integer :: iplayvarid, iplevvarid  ! integer pressure lay/lev variable IDs
+integer :: ihybivarid, ihybmvarid  ! integer sigma coord variable IDs
+integer :: ilatvarid, ilonvarid    ! integer lat/lon variable IDs
+integer :: iprofvarid(1:np)        ! integer aerosol profile variable ID, 11 aerosol types                                 
+integer :: iaodvarid(1:np+1)       ! integer aerosol OD variable ID
 
 integer :: ncid                    ! netCDF (nc) file ID
-integer :: i, j, p, k, t           ! loop indices
+integer :: i, j, p, k, t           ! array loop indices - lon, lat, lay, hr, type
 
 !===========================================  
 ! MATCH aerosol vertical profile (mavp) data structure definition
 type mavptype
-real :: aero_array(11,nlon,nlat,nlay,ntime) ! aerosol array, types 1-11
-real :: aero_array7(7,nlon,nlat,nlay,ntime) ! aerosol array, types 1-11 combined into 7 categories
-character*7 aero_type11(11)                 ! aerosol type label, 11 constituents
-character*10 aero_type7(7)                  ! aerosol type label, 7 constituents obtained by combining categories
-real :: aero_profs(np,nlay)                 ! aerosol profiles extracted at CERES FOV LAT/LON/HR
-real :: aero_profs7(7,nlay)                 ! aerosol profiles extracted at CERES FOV LAT/LON/HR, combined into 7 categories
+real :: aero_array(np,nlon,nlat,nlay,ntime)  ! aerosol array, types 1-11
+real :: aero_array7(npc,nlon,nlat,nlay,ntime)! aerosol array, types 1-11 combined into 7 categories
+character*7 aero_type11(np)                  ! aerosol type label, 11 constituents
+character*10 aero_type7(npc)                 ! aerosol type label, 7 constituents obtained by combining categories
+real :: aero_profs(np,nlay)                  ! aerosol profiles extracted at CERES FOV LAT/LON/HR
+real :: aero_profs7(npc,nlay)                ! aerosol profiles extracted at CERES FOV LAT/LON/HR, combined into 7 categories
 end type mavptype
 
-type (mavptype) mavp                        ! MATCH aerosol profile data structure variable
+type (mavptype) mavp                         ! MATCH aerosol profile data structure variable
 
 !=========================================== 
 ! MATCH aerosol optical depth (AOD) data structure definition
 type aodtype
-real :: aod_array(12,nlon,nlat,ntime)       ! AOD array, total + 11 aerosol types
-real :: aod_array8(8,nlon,nlat,ntime)       ! AOD array, total + 7 combined aerosol types
-character*8 aod_type12(12)                  ! AOD type label, total + 11 aerosol types
-character*8 aod_type8(8)                    ! AOD type label, total + 7 combined aerosol types
-real :: aod_fov(np)                         ! AOD extracted at CERES FOV LAT/LON/HR
+real :: aod_array(np+1,nlon,nlat,ntime)      ! AOD array, total + 11 aerosol types
+real :: aod_array8(npc+1,nlon,nlat,ntime)    ! AOD array, total + 7 combined aerosol types
+character*8 aod_type12(np+1)                 ! AOD type label, total + 11 aerosol types
+character*8 aod_type8(npc+1)                 ! AOD type label, total + 7 combined aerosol types
+real :: aod_fov(np)                          ! AOD extracted at CERES FOV LAT/LON/HR
 end type aodtype
 
-type (aodtype) aod                          ! MATCH AOD data structure variable
+type (aodtype) aod                           ! MATCH AOD data structure variable
 
 !===============================================
+!Parameters required to regrid to Fu-Liou
+
+integer, parameter :: mlev = 30 ! max # of Fu-Liou model levels
+real :: dpp(mlev)               ! pressure layer thickness profile (size nv = nv1 - 1)
+real :: p1, p2
+real :: dp          
+real :: psfc, px, pt, pb
+real :: asm1(np), nsm1
+real :: plast
+real :: ttt_comb
+real :: sdpp       
+
 ! Fu-Liou model profile (mpro) data structure definition
 
-integer, parameter :: mlev = 200 ! max # of Fu-Liou model levels
-
 type mvptype
-real :: fovlon    ! CERES FOV lon
-real :: fovlat    ! CERES FOV lat
-integer :: nv1    ! vertical levels = nv + 1
-integer :: mlev   ! max # model levels
-real :: pp(mlev)  ! pressure profile levels
+real :: fovlon            ! CERES FOV lon
+real :: fovlat            ! CERES FOV lat
+integer :: nv1            ! vertical levels = nv + 1
+integer :: mlev           ! max # model levels
+real :: pp(mlev)          ! pressure profile levels
+real :: dpp(mlev-1)       ! pressure layer thickness profile
+real :: mvp(np,mlev)      !
+real :: mvp_comb(npc,mlev)! 
 end type mvptype
 
 type (mvptype) mpro
@@ -182,15 +198,23 @@ data aod%aod_type12 / &
 
 
 ! Set parameters of Fu-Liou model profile...
+! location of CERES FOV
+mpro%fovlon = fov_lon
+mpro%fovlat = fov_lat
 
 ! specify model # vertical levels
 mpro%nv1 = 30
+!mpro%nv1 = 10
 
 ! specify model pressure levels                                                                                                                      
 mpro%pp(1:mpro%nv1) =                                &  ! Fu-Liou equivalent ( fi%pp(1:fi%nv +1 )
 (/0.01, 1., 5., 10., 30. ,50., 70.,100.,125.,150.,   &
 175.,200.,250.,300.,350.,400.,450.,500.,550.,600.,   &
 650.,700.,750.,800.,850.,900.,950.,975.,995.,1005./)
+
+!mpro%pp(1:mpro%nv1) = (/1., 10., 50., 100., 200., 400., 600., 700., 900., 1000./)
+
+psfc = mpro%pp(mpro%nv1)
 
 !==============================================
 
@@ -200,8 +224,10 @@ call check( nf90_open(FILE_NAME, NF90_NOWRITE, ncid) )
 ! get the id for each variable based on its name
 call check( nf90_inq_varid(ncid, "lon", ilonvarid) )   ! lon var id
 call check( nf90_inq_varid(ncid, "lat", ilatvarid) )   ! lat var id
-call check( nf90_inq_varid(ncid, "ilev", iplevvarid) ) ! lev var id - nc files poorly named
+call check( nf90_inq_varid(ncid, "ilev", iplevvarid) ) ! lev var id - nc files poorly named...
 call check( nf90_inq_varid(ncid, "lev" , iplayvarid) ) ! lay var id
+call check( nf90_inq_varid(ncid, "hybi", ihybivarid) ) ! hybi var id - lev
+call check( nf90_inq_varid(ncid, "hybm", ihybmvarid) ) ! hybm var id - lay
 
 ! print nc file and variable ids
 print*, "===================================="
@@ -213,7 +239,8 @@ call check( nf90_get_var(ncid,ilonvarid, lon) )
 call check( nf90_get_var(ncid,ilatvarid, lat) )
 call check( nf90_get_var(ncid,iplevvarid, plev) )
 call check( nf90_get_var(ncid,iplayvarid, play) )
-
+call check( nf90_get_var(ncid,ihybivarid, hybi) )
+call check( nf90_get_var(ncid,ihybmvarid, hybm) )
 
 !********************************************************************************************************
 ! dimensions are reversed in the netCDF file - this code is old but left here as an FYI
@@ -243,6 +270,34 @@ print*, "===================================="
 print*, " Successfully read 4D & 5D data...  "
 print*, " AerosOD(type,nlon,nlat,ntime)      "
 print*, " Profile(type,nlon,nlat,nlev,ntime) "
+
+
+
+!print*, "Getting aerosol profiles at CERES FOV location..."  
+!do t = 1,11                ! aerosol type                                                                                                          
+!   do k = mfov_hr,mfov_hr  ! time 
+!      print*, "========================================================================================="                                            
+!      print*, "MATCH Hour:",k, "Type:  ",mavp%aero_type11(t), "VarID:  ",iaodvarid(t)                                                                 
+!      print*, "========================================================================================="                                 
+!      do p=1,nlay          ! pressure layers                                                                                                      
+!         print*, "Lon:", lon(lon_match_ceresfov(fov_lon)),"Lat:", lat(lat_match_ceresfov(fov_lat)), "Pres:",play(p), "Aero:", &                        
+!                         mavp%aero_prof(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,k)                                              
+!      end do                                                                                                                                   
+!   end do                                                                                                                                           
+!end do
+
+!print*, "Printing combined aerosol profiles at CERES FOV location..."                                                                                 
+!do t = 1,7                 ! aerosol type combined                                                                                                    
+!   do k = mfov_hr,mfov_hr  ! time                                                                                                                    
+!      print*, "========================================================================================="                                             
+!      print*, "MATCH Hour:",k, "Type:  ",mavp%aero_type7(t)                                                                                           
+!      print*, "========================================================================================="                                            
+!      do p = 1,nlay        ! pressure layers                                                                                                          
+!         print*, "Lon:", lon(lon_match_ceresfov(fov_lon)),"Lat:", lat(lat_match_ceresfov(fov_lat)), "Pres:",play(p), "Aero:", &                  
+!                         mavp%aero_array7(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,k)                                        
+!      end do                                                                                                                                          
+!   end do                                                                                                                                      
+!end do                                                                                                                                         
 
 
 !print*, "===================================="
@@ -322,14 +377,23 @@ print*, lon
 print*, "MATCH Pressure Levels"
 print*, plev
 
-print*, "MATCH Pressure Layers"
+print*, "MATCH Sigma Levels"
+print*, hybi
+
+print*, "MATCH Pressure Layers (Midpoints)"
 print*, play
+
+print*, "MATCH Sigma Layers (Midpoints)"
+print*, hybm
+
+print*, "Fu-Liou Pressure Levels"
+print*, mpro%pp(1:mpro%nv1)
 
 print*, "======================================"
 print*, "Matching MATCH data to CERES FOV...   "
 print*, "======================================"
 
-! CERES FOV hr is offset from MATCH by 1
+! CERES FOV hr is offset from MATCH by 1 hr
 mfov_hr = fov_hr + 1
 
 print*, "Artificial CERES Hour   :", fov_hr
@@ -337,10 +401,10 @@ print*, "Artificial CERES FOV lon:", fov_lon
 print*, "Artificial CERES FOV lon:", fov_lat
 
 print*, "MATCH longitude index, MATCH longitude"
-print*, lon_match_ceresfov(fov_lon), lon(lon_match_ceresfov(fov_lon))
+print*, ilon_match_ceresfov(fov_lon), lon(ilon_match_ceresfov(fov_lon))
 
 print*, "MATCH latitude index, MATCH latitude "
-print*, lat_match_ceresfov(fov_lat), lat(lat_match_ceresfov(fov_lat))
+print*, jlat_match_ceresfov(fov_lat), lat(jlat_match_ceresfov(fov_lat))
 
 print*, "======================================"
 print*, "Getting aerosol profiles at CERES FOV "
@@ -348,7 +412,7 @@ print*, "======================================"
 
 do t = 1,np       ! aerosol types
    do p = 1,nlay  ! pressure layers          ! call functions to match aerosol profiles to CERES FOV
-      mavp%aero_profs(t,p) = mavp%aero_array(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,mfov_hr)
+      mavp%aero_profs(t,p) = mavp%aero_array(t,ilon_match_ceresfov(fov_lon),jlat_match_ceresfov(fov_lat),p,mfov_hr)
    end do
 end do
 
@@ -361,7 +425,7 @@ mavp%aero_profs7(1,:) = mavp%aero_profs(1,:)                                  ! 
 mavp%aero_profs7(2,:) = sum(mavp%aero_profs(2:4,:),1)                         ! 2. DustLg = DSTQ02+DSTQ03+DSTO4                           
 mavp%aero_profs7(4,:) = mavp%aero_profs(6,:)                                  ! 4. SSLT                                                   
 mavp%aero_profs7(5,:) = sum(mavp%aero_profs(7:8,:),1)                         ! 5. OPAC SOOT = BCPHI+BCPHO                              
-mavp%aero_profs7(7,:) = mavp%aero_profs(10,:)  
+mavp%aero_profs7(7,:) = mavp%aero_profs(10,:)                                 ! 7. OPAC INSO
 
 ! assumes 200 mb tropopause                                                                                                                              
 do p=1,nlay                                                                                                                                             
@@ -376,42 +440,70 @@ do p=1,nlay
   end if                                                                                                                                                
 end do 
 
-
-
+print*, "======================================================================================================================"
+print*, "      DustSm           DustLg         OPAC SUSO           SSLT          OPAC SOOT        OPAC WASO        OPAC INSO"
+print*, "======================================================================================================================"
 do p = 1,nlay
    write(*,*) ( mavp%aero_profs7(t,p), t=1,7 )
 end do
+print*, "======================================================================================================================"
 
+!===============================================================
+! The following code has been modified from MATCH_ed4_hourly_SYNI.f90...
 
+mpro%mvp = 0.0
+plast = 0.0                         ! mpro%pp(1) <- TOA
 
-!print*, "Getting aerosol profiles at CERES FOV location..."
+OUTLEV : do i = 1,mpro%nv1-1        ! loop over Fu-Liou model layers starting at TOA
+            p1 = mpro%pp(i)         ! p1 < p2 
+            p2 = mpro%pp(i+1)       ! p2
+            dpp(i) = p2-p1          ! calculate pressure layer thickness profile
 
-!do t = 1,11                ! aerosol type 
-!   do k = mfov_hr,mfov_hr  ! time
-!      print*, "========================================================================================="
-!      print*, "MATCH Hour:",k, "Type:  ",mavp%aero_type11(t), "VarID:  ",iaodvarid(t)
-!      print*, "========================================================================================="
-!      do p=1,nlay          ! pressure layers  
-!         print*, "Lon:", lon(lon_match_ceresfov(fov_lon)),"Lat:", lat(lat_match_ceresfov(fov_lat)), "Pres:",play(p), "Aero:", &
-!                         mavp%aero_prof(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,k)
-!      end do
-!   end do
-!end do
+            asm1=0    
+            nsm1=0   
 
+            hybi(1) = 0.00          ! TOA at zero pressure
 
-!print*, "Printing combined aerosol profiles at CERES FOV location..."
+INLEV  : do k = 1,nlay              ! loop over MATCH layers starting at TOA
+            px = hybm(k)*psfc       ! multiply MATCH sigma layer midpoints by Fu-Liou psfc
+            pt = hybi(k)*psfc       ! multiply MATCH sigma level by Fu-Liou psfc
+            pb = hybi(k+1)*psfc     ! set p bottom equal to Fu-Liou surface pressure
 
-!do t = 1,7                 ! aerosol type combined
-!   do k = mfov_hr,mfov_hr  ! time
-!      print*, "========================================================================================="
-!      print*, "MATCH Hour:",k, "Type:  ",mavp%aero_type7(t)
-!      print*, "========================================================================================="
-!      do p = 1,nlay        ! pressure layers
-!         print*, "Lon:", lon(lon_match_ceresfov(fov_lon)),"Lat:", lat(lat_match_ceresfov(fov_lat)), "Pres:",play(p), "Aero:", &
-!                         mavp%aero_array7(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,k)
-!      end do
-!   end do
-!end do
+            if ( k .eq. nlay)  pb = psfc  
+            dp = 0
+
+            
+            if( (p1 >= pt .and. p2 <= pb ) .or. &
+                (pt >= p1 .and. pb <= p2 ) .or. &
+                (p1 >= pt .or. p2 >= pb )  .and. ( p1<=pb .or. p2<= pb) ) then
+
+            dp = pb - plast 
+             
+            !print*, pt, pb, dp, plast 
+                                                                                                                   
+            if ( dp == 0 ) cycle  ! exit inner do loop
+            
+            if ( p2 < pb ) dp = p2 - plast  
+
+            plast = plast + dp
+
+            ! change aero_profs7 to aero_profs and npc to np to do raw constituents...
+            asm1(1:npc) = asm1(1:npc) + mavp%aero_profs7(1:npc,k)*dp
+            nsm1 = nsm1+dp
+
+            !print*, nsm1
+
+            end if
+
+end do INLEV
+            
+            if( nsm1 > 0 ) mpro%mvp(i,1:npc) =  asm1(1:npc)/ nsm1
+
+            ! print out the resulting profiles on Fu-Liou grid
+            print*, mpro%mvp(i,1:npc)
+
+enddo OUTLEV
+
 
 
 
@@ -445,7 +537,7 @@ end subroutine check
 ! FUNCTION:
 ! Calculate CERES FOV & MATCH long distance, match by index
 !********************************************************** 
-function lon_match_ceresfov(fovlon) result(ilon)
+function ilon_match_ceresfov(fovlon) result(ilon)
 integer :: i            !loop index
 integer :: ilon         !min dist index
 real :: dist_lon(nlon)  !distance array
@@ -459,13 +551,13 @@ dist_lon = abs(lon-fovlon)
 do i=1,nlon
   if (dist_lon(i) == minval(dist_lon)) ilon = i 
 end do
-end function lon_match_ceresfov
+end function ilon_match_ceresfov
 
 !********************************************************** 
 ! FUNCTION                                                                        
 ! Calculate CERES FOV & MATCH lat distance, match by index
 !**********************************************************                                                                           
-function lat_match_ceresfov(fovlat) result(ilat)
+function jlat_match_ceresfov(fovlat) result(ilat)
 integer :: i            !loop index      
 integer :: ilat         !index of profile closest to fov                                                                          
 real :: dist_lat(nlat)  !distance array                                                                                             
@@ -476,7 +568,7 @@ dist_lat = abs(lat-fovlat)
 do i=1,nlat
   if (dist_lat(i) == minval(dist_lat)) ilat = i
 end do
-end function lat_match_ceresfov
+end function jlat_match_ceresfov
 
 
 !********************************************************** 
