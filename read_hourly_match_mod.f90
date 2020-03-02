@@ -1,15 +1,14 @@
 !=================================================================== 
 !
-! Name:    read_hourly_match.f90
+! Name:    MATCH_Ed4_rcs.f90
 !
 ! Purpose: This program reads vertical aerosol profiles (kg/kg) and
-!          aerosol optical depth information from [daily, hourly res]
-!          netCDF files for 11 aerosol constituents. First raw data
+!          aerosol optical depth information from daily, hourly res
+!          MATCH netCDF files for 11 aerosol constituents. First raw
 !          data are matched in time and space and extracted at the
-!          location of CERES footprints. The profiles are then re-
-!          gridded from MATCH to Fu-Liou pressure layers. They are 
-!          then converted into AOD profiles as required for input to 
-!          the Fu-Liou RT model for CRS flux calculations.
+!          location of CERES footprints. Profiles are regridded from
+!          MATCH to Fu-Liou pressure layers and then converted into
+!          AOD profiles for Fu-Liou CRS radiant flux calculations.
 !
 ! Modules: netcdf
 !
@@ -25,18 +24,20 @@
 !     from appropriate ASDC_archive dir on AMI. To do this, need to
 !     use pcf module, etc. Fred can help w/ these ins and outs... 
 !
-! (2) Read SSF data directly instead of artificially.
+! (2) Read SSF data directly instead of using artificial values here
+!
+! (3) Read Fu-Liou model levels
 !
 !===================================================================
-program read_hourly_match 
+program MATCH_Ed4_rcs
  
-! use netcdf module - see README for compilation instructions
+! use netcdf module - see README for local machine compilation instructions
 use netcdf
 
 ! no implicit variables
 implicit none
 
-! name of MATCH file to be read
+! name of MATCH file to be read - this will need to come from pcf
 character (len = *), parameter :: FILE_NAME = "CER_MATCH-hourly_Terra-Aqua-MODIS_Edition4_402402.20190101.nc"
 
 ! dimensions of MATCH data
@@ -47,7 +48,8 @@ integer, parameter :: nlay = 28    ! number of pressure layers
 integer, parameter :: nlev = nlay+1! number of pressure levels
 integer, parameter :: np = 11      ! number of particle constituents
 integer, parameter :: npc = 7      ! number of particle constituents combined
-real :: lon(nlon), lat(nlat)       ! MATCH grid box lon, lat
+!real :: lon(nlon)                  ! MATCH grid box lon
+!real :: lat(nlat)                  ! MATCH grid box lat
 real :: play(nlay), plev(nlev)     ! MATCH pressure layers, levels
 real :: hybi(nlev), hybm(nlay)     ! MATCH sigma coordinates for levels & layer midpoints
 
@@ -65,14 +67,13 @@ integer :: i, j, p, k, t           ! array loop indices - lon, lat, lay, hr, typ
 ! MATCH aerosol vertical profile (mavp) data structure definition
 type mavptype
 real :: aero_array(np,nlon,nlat,nlay,ntime)  ! aerosol array, types 1-11
-real :: aero_array7(npc,nlon,nlat,nlay,ntime)! aerosol array, types 1-11 combined into 7 categories
 character*7 aero_type11(np)                  ! aerosol type label, 11 constituents
 character*10 aero_type7(npc)                 ! aerosol type label, 7 constituents obtained by combining categories
 real :: aero_profs(np,nlay)                  ! aerosol profiles extracted at CERES FOV LAT/LON/HR
 real :: aero_profs7(npc,nlay)                ! aerosol profiles extracted at CERES FOV LAT/LON/HR, combined into 7 categories
 end type mavptype
 
-type (mavptype) mavp                         ! MATCH aerosol profile data structure variable
+type (mavptype) mavp                         ! MATCH aerosol vertical profile data structure variable
 
 !=========================================== 
 ! MATCH aerosol optical depth (AOD) data structure definition
@@ -80,7 +81,6 @@ type aodtype
 real :: aod_array(np+1,nlon,nlat,ntime)      ! AOD array, total + 11 aerosol types
 real :: aod_array8(npc+1,nlon,nlat,ntime)    ! AOD array, total + 7 combined aerosol types
 character*8 aod_type12(np+1)                 ! AOD type label, total + 11 aerosol types
-!character*8 aod_type8(npc+1)                 ! AOD type label, total + 7 combined aerosol types
 real :: aod_fov(np)                          ! AOD extracted at CERES FOV LAT/LON/HR
 end type aodtype
 
@@ -95,18 +95,17 @@ real :: p1, p2                  ! used in regrid loop - Fu-Liou levels
 real :: dp                      ! used in regrid loop - pressure thickness
 real :: psfc                    ! used in regrid loop - Fu-Liou surface pressure
 real :: pt, pb                  ! used in regrid loop - MATCH p layers - top, bottom
-real :: asm1(np), nsm1          ! used in regrid loop 
+real :: asm1(np), nsm1          ! used in regrid loop to calculate Fu-Liou value
 real :: plast                   ! used in regrid loop - last/previous pressure
-real :: sdpp                    ! sum of (Fu-Liou p-layer thicnkess profile, dpp)
-real :: tta(np), tta_comb(npc)  ! used to combine profiles
-real :: ttt(np)                 ! used to combine profiles
-real :: tts(np)                 ! used to combine profiles
+real :: tta(np), tta_comb(npc)  ! total thickness - full atmosphere, individual, combined
+real :: ttt(np)                 ! total thickness - troposphere
+real :: tts(np)                 ! total thickness - stratosphere
 real :: amr(np)                 ! X = total AOD / total mass
-integer :: icxA(np)             ! pointer to combine constituents
-integer :: icxT(np)             ! pointer to combine constituents   
-integer :: icxS(np)             ! pointer to combine constituents
-real :: ptrop = 200.            ! tropopause pressure, assume 200 mb
-integer :: ilev_trop            ! Fu-Liou pressure profile tropospause location index
+integer :: icxA(np)             ! pointer to combine constituents - full atmos
+integer :: icxT(np)             ! pointer to combine constituents - troposphere
+integer :: icxS(np)             ! pointer to combine constituents - stratosphere
+real :: ptrop = 200.            ! tropopause pressure, assume = 200 mb
+integer :: ilev_trop            ! index of Fu-Liou pressure profile tropospause location
 
 !=============================================== 
 ! Fu-Liou model profile (mpro) data structure definition
@@ -175,7 +174,51 @@ data aod%aod_type12 / &
 !          1  2  3  4  5  6  7  8  9 10 11          
 data icxA /1, 2, 2, 2, 0, 4, 5, 5, 6, 7, 3/ ! full atmosphere
 data icxT /0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0/ ! troposphere
-data icxS /0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0/ ! stratosphere  
+data icxS /0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0/ ! stratosphere
+
+
+! MATCH latitude centers
+real, parameter :: lat(nlat) =                                   &
+(/-88.54195,-86.65317,-84.75323, -82.85078,-80.94736,-79.0434,   &
+-77.13935, -75.23505, -73.33066, -71.42619,-69.52167,-67.617,    &
+-65.71251, -63.8079, -61.90326, -59.99861,-58.09395,-56.1892,    &
+-54.2846, -52.37991, -50.47522, -48.57052, -46.66582,-44.7611,   &
+-42.8564, -40.95169, -39.04697, -37.14225, -35.23753,-33.3328,   &
+-31.42808, -29.52336, -27.61863, -25.7139, -23.80917,-21.9044,   &
+-19.99971,-18.09498,-16.19024,-14.28551, -12.38078,-10.4760,     &
+-8.571308, -6.666573, -4.761838, -2.857103, -0.952368,0.952368,  &
+2.857103, 4.761838, 6.666573,8.571308,10.47604,12.38078,14.285,  &
+16.19024, 18.09498, 19.99971,21.90444,23.80917,25.7139, 27.618,  &
+29.52336, 31.42808, 33.33281,35.23753,37.14225,39.04697,40.951,  &
+42.8564, 44.76111, 46.66582,48.57052,50.47522,52.37991, 54.284,  &
+56.18928, 58.09395, 59.99861,61.90326,63.8079,65.71251, 67.617,  &
+69.52167, 71.42619, 73.33066,75.23505,77.13935,79.04349,80.947,  &
+82.85078, 84.75323, 86.65317,88.54195 /)
+
+! MATCH longitude centers
+real, parameter :: lon(nlon) =                                   &
+(/0.,1.875,3.75,5.625,7.5,9.375,11.25,13.125,15.,16.875,18.75,   &
+20.625,22.5,24.375,26.25,28.125,30.,31.875,33.75,35.625,37.5,    &
+39.375,41.25,43.125,45.,46.875,48.75,50.625,52.5,54.375,56.25,   &
+58.125,60.,61.875,63.75,65.625,67.5,69.375,71.25,73.125,75.,     &
+76.875,78.75,80.625,82.5,84.375,86.25,88.125,90.,91.875,93.75,   &
+95.625,97.5,99.375,101.25,103.125,105.,106.875,108.75,110.625,   &
+112.5,114.375,116.25,118.125,120.,121.875,123.75,125.625,127.5,  &
+129.375,131.25,133.125,135.,136.875,138.75,140.625,142.5,144.375,&
+146.25,148.125,150.,151.875,153.75,155.625,157.5,159.375,161.25, &
+163.125,165.,166.875,168.75,170.625,172.5,174.375,176.25,178.125,&
+180.,181.875,183.75,185.625,187.5,189.375,191.25,193.125,195.,   &
+196.875,198.75,200.625,202.5,204.375,206.25,208.125,210.,211.875,&
+213.75,215.625,217.5,219.375,221.25,223.125,225.,226.875,228.75, &
+230.625,232.5,234.375,236.25,238.125,240.,241.875,243.75,245.625,&
+247.5,249.375,251.25,253.125,255.,256.875,258.75,260.625,262.5,  &
+264.375,266.25,268.125,270.,271.875,273.75,275.625,277.5,279.375,&
+281.25,283.125,285.,286.875,288.75,290.625,292.5,294.375,296.25, &
+298.125,300.,301.875,303.75,305.625,307.5,309.375,311.25,313.125,&
+315.,316.875,318.75,320.625,322.5,324.375,326.25,328.125,330.,   &
+331.875,333.75,335.625,337.5,339.375,341.25,343.125,345.,346.875,&
+348.75,350.625,352.5,354.375,356.25,358.125/)
+
 
 ! set parameters of Fu-Liou model profile...
 ! location of CERES FOV
@@ -193,20 +236,21 @@ mpro%pp(1:mpro%nv1) =                                &  ! Fu-Liou equivalent ( f
 
 ! Test code on multiple Fu-Liou model profiles...
 ! second Fu-Liou test pressure level profile...
-mpro%nv1 = 10
-mpro%pp(1:mpro%nv1) = (/1., 10., 50., 100., 200., 400., 600., 700., 900., 1000./)
+!mpro%nv1 = 10
+!mpro%pp(1:mpro%nv1) = (/1., 10., 50., 100., 200., 400., 600., 700., 900., 1000./)
 
 ! sfc pressure from lowest Fu-Liou level
 psfc = mpro%pp(mpro%nv1)
 
 !==============================================
 
+! call subroutines to accomplish necessary tasks...
 
 call read_ceres_fov
 
 call ingest_match_aerosol_arrays
 
-call match_with_ceres_fov
+call match_with_ceres_fov          ! CERES lat,lon,hour must be specified for this to work
 
 call regrid_from_match_to_fu
 
@@ -226,14 +270,20 @@ contains
 !**********************************************************
 !**********************************************************
 
+
 subroutine check(status)
+
+
 integer, intent (in) :: status
 
 if(status /= nf90_noerr) then
     print *, trim(nf90_strerror(status))
     stop "Stopped"
     end if
+
+
 end subroutine check
+
 
 !**********************************************************
 !**********************************************************
@@ -242,7 +292,9 @@ end subroutine check
 !**********************************************************
 !**********************************************************
 
+
 subroutine read_ceres_fov
+
 
 ! Prompt user for artificial CERES FOV geolocation & time
 write(*,*) "Enter artificial CERES FOV longitude:"
@@ -252,7 +304,9 @@ read(*,*) fov_lat
 write(*,*) "Enter artificial CERES hour:"
 read(*,*) fov_hr
 
+
 end subroutine read_ceres_fov
+
 
 !**********************************************************
 !**********************************************************
@@ -262,14 +316,16 @@ end subroutine read_ceres_fov
 !**********************************************************
 !**********************************************************
 
+
 subroutine ingest_match_aerosol_arrays
+
 
 ! open the netcdf file in read mode
 call check( nf90_open(FILE_NAME, NF90_NOWRITE, ncid) )
 
 ! get the id for each variable based on its name
-call check( nf90_inq_varid(ncid, "lon", ilonvarid) )   ! lon var id
-call check( nf90_inq_varid(ncid, "lat", ilatvarid) )   ! lat var id
+!call check( nf90_inq_varid(ncid, "lon", ilonvarid) )   ! lon var id
+!call check( nf90_inq_varid(ncid, "lat", ilatvarid) )   ! lat var id
 call check( nf90_inq_varid(ncid, "ilev", iplevvarid) ) ! lev var id - nc files poorly named...
 call check( nf90_inq_varid(ncid, "lev" , iplayvarid) ) ! lay var id
 call check( nf90_inq_varid(ncid, "hybi", ihybivarid) ) ! hybi var id - lev
@@ -281,13 +337,12 @@ print*, "  NetCDF file and variable IDs...   "
 print*, "===================================="
 
 ! read the data
-call check( nf90_get_var(ncid,ilonvarid, lon) )
-call check( nf90_get_var(ncid,ilatvarid, lat) )
+!call check( nf90_get_var(ncid,ilonvarid, lon) )
+!call check( nf90_get_var(ncid,ilatvarid, lat) )
 call check( nf90_get_var(ncid,iplevvarid, plev) )
 call check( nf90_get_var(ncid,iplayvarid, play) )
 call check( nf90_get_var(ncid,ihybivarid, hybi) )
 call check( nf90_get_var(ncid,ihybmvarid, hybm) )
-
 
 ! read aerosol arrays
 do i = 1,11
@@ -311,12 +366,14 @@ end do
 call check( nf90_close(ncid) )
 
 print*, "==================================================="
-print*, " Successfully read MATCH data arrays...            "
+print*, " Successfully read MATCH aerosol arrays...         "
 print*, " Aerosol optical depth (type,nlon,nlat,ntime)      "
 print*, " Aerosol profiles      (type,nlon,nlat,nlev,ntime) "
 print*, "==================================================="
 
+
 end subroutine ingest_match_aerosol_arrays
+
 
 !**********************************************************
 !**********************************************************
@@ -325,7 +382,9 @@ end subroutine ingest_match_aerosol_arrays
 !**********************************************************
 !**********************************************************
 
+
 subroutine match_with_ceres_fov
+
 
 print*, "======================================================="
 print*, "Getting MATCH aerosol profiles/AOD at CERES FOV...     "
@@ -359,7 +418,6 @@ do t = 0,np          !indicies... aod%aod_array(1:12) but want mpro%aods_all(0:1
    mpro%aods_all(t) = aod%aod_array(t+1,ilon_match_ceresfov(fov_lon),jlat_match_ceresfov(fov_lat),mfov_hr)
 end do
 
-
 print*, "================================================================="
 print*, "Aerosol profiles on native MATCH pressure layers (showing 1-9)..."
 print*, "================================================================="
@@ -368,7 +426,9 @@ do p = 1,nlay
    write(*,*) (mavp%aero_profs(t,p), t=1,9) ! just showing 9 since it fits on my small screen
 end do
 
+
 end subroutine match_with_ceres_fov
+
 
 !**********************************************************
 !**********************************************************
@@ -378,7 +438,9 @@ end subroutine match_with_ceres_fov
 !**********************************************************
 !**********************************************************
 
+
 subroutine regrid_from_match_to_fu
+
 
 print*, "======================================================================"
 print*, "Aerosol profiles regridded to Fu-Liou pressure levels (showing 1-9)..."
@@ -449,20 +511,22 @@ end subroutine regrid_from_match_to_fu
 !**********************************************************
 !**********************************************************
 
+
 subroutine convert_profiles_to_aot
 
+
 print*, "================================================================="
-print*, "Aerosol profiles converted to AOT (showing 1-9)..."
+print*, "Aerosol profiles converted to AOT (showing 1-9)...               "
 print*, "================================================================="
 
 ! normalize Fu-Liou dpp profile by TOA-surface p difference
-dpp(1:mpro%nv1-1) = dpp(1:mpro%nv1-1)/sum(dpp(1:mpro%nv1-1))  ! can comment out with no effect... why?
+dpp(1:mpro%nv1-1) = dpp(1:mpro%nv1-1)/sum(dpp(1:mpro%nv1-1))
 
 ! do for all aerosol (t)ypes...
 do t=1,np
 
    ! multiply constituent profiles by normalized dpp profile
-   mpro%mvp(t, 1:mpro%nv1-1 )= mpro%mvp(t, 1:mpro%nv1-1)* dpp(1:mpro%nv1-1)
+   mpro%mvp(t, 1:mpro%nv1-1 )= mpro%mvp(t, 1:mpro%nv1-1) * dpp(1:mpro%nv1-1)
 
    ! 'X' = Total AOD / Total Mass
    amr(t) = mpro%aods_all(t)/sum( mpro%mvp(t, 1:mpro%nv1-1 ) )
@@ -477,7 +541,9 @@ do p = 1,mpro%nv1-1
    write(*,*) (mpro%mvp(t,p), t=1,9) ! just showing 9 since it fits on my small screen
 end do
 
+
 end subroutine convert_profiles_to_aot
+
 
 !**********************************************************
 !**********************************************************
@@ -486,10 +552,12 @@ end subroutine convert_profiles_to_aot
 !**********************************************************
 !**********************************************************
 
+
 subroutine combine_aero_profiles
 
+
 print*, "=============================================================="
-print*, "Comparing 11 AODs (i) sum AOD profiles (ii) MATCH... "
+print*, "Comparing 11 AODs: (i) sum over AOD profiles, (ii) MATCH...   "
 print*, "=============================================================="
 
 ! retrieve index of Fu-Liou tropopause (assuming p = 200mb)
@@ -515,7 +583,7 @@ do t = 1,np
    ttt(t) = sum( mpro%mvp(t, ilev_trop+1:mpro%nv1-1 ) ) ! sum over tropospheric portion
    
    ! these values should be equal
-   print*, tta(t), mpro%aods_all(t)
+    print*, tta(t), mpro%aods_all(t)
 
    if ( icxA(t) > 0 .and. tta(t) > 0 ) then
       tta_comb( icxA(t) ) = tta_comb( icxA(t) ) + tta(t)
@@ -540,12 +608,6 @@ do t = 1,np
 
 end do
 
-! renormalize profiles by total AOD and convert to percentages
-! this allows division by zero, which yields NaN values...
-!do k = 1, mpro%nv1-1
-!   mpro%mvp(1:np,k)       = 100*mpro%mvp     (1:np,k ) / tta(1:np)
-!   mpro%mvp_comb(1:npc,k) = 100*mpro%mvp_comb(1:npc,k) / tta_comb(1:npc)
-!end do
 
 ! renormalize profiles by total AOD and convert to percentages
 ! ...but don't divide by zero...
@@ -561,10 +623,9 @@ do t = 1,npc
    end do
 end do
 
-
 ! get combined AODs
-mpro%aods_comb (1:npc) = mpro%aods_comb (1:npc)
-mpro%aods_comb (0)     = sum(mpro%aods_comb(1:npc))
+mpro%aods_comb(1:npc) = mpro%aods_comb(1:npc)
+mpro%aods_comb(0)     = sum(mpro%aods_comb(1:npc))
 
 mpro%ityp_comb(1:npc) =  (/ 24, 25, 18, 1, 11, 10, 9 /) ! Fu-Liou aerosol types
 
@@ -587,12 +648,14 @@ enddo
 
 end subroutine combine_aero_profiles
 
+
 !**********************************************************
 !**********************************************************
 ! FUNCTION:
 ! Calculate CERES FOV & MATCH long distance, match by index
 !**********************************************************
 !**********************************************************
+
 
 function ilon_match_ceresfov(fovlon) result(ilon)
 integer :: i            !loop index
@@ -610,12 +673,14 @@ do i=1,nlon
 end do
 end function ilon_match_ceresfov
 
+
 !**********************************************************
 !********************************************************** 
 ! FUNCTION                                                                        
 ! Calculate CERES FOV & MATCH lat distance, match by index
 !**********************************************************
 !**********************************************************
+
 
 function jlat_match_ceresfov(fovlat) result(ilat)
 integer :: i            !loop index      
@@ -630,9 +695,10 @@ do i=1,nlat
 end do
 end function jlat_match_ceresfov
 
+
 !********************************************************** 
 
-end program read_hourly_match
+end program MATCH_Ed4_rcs
 
 
 
