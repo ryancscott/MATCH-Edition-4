@@ -2,14 +2,14 @@
 !
 ! Name:    read_hourly_match.f90
 !
-! Purpose: This program reads aerosol vertical profiles (kg/kg) and
+! Purpose: This program reads vertical aerosol profiles (kg/kg) and
 !          aerosol optical depth (AOD) information from hourly MATCH
-!          netCDF files for 11 aerosol constituents. First, the raw
-!          data are matched in time and space and extracted on CERES 
-!          footprints. The profiles are then regridded from MATCH 
-!          pressure layers to Fu-Liou pressure levels. They are then
-!          converted into profiles of AOD as required for input to 
-!          the Fu-Liou RT model for CRS calculations...
+!          netCDF files for 11 aerosol constituents. First raw data
+!          data are matched in time and space and extracted at the
+!          location of CERES footprints. The profiles are then re-
+!          gridded from MATCH to Fu-Liou pressure layers. They are 
+!          then converted into AOD profiles as required for input to 
+!          the Fu-Liou RT model for CRS flux calculations.
 !
 ! Modules: netcdf
 !
@@ -27,10 +27,7 @@
 !
 ! (2) Read SSF data directly instead of artificially.
 !
-! (3) Ensure accuracy of aerosol mixing ratio to AOT conversion
-!     and combination of profiles in OPAC consistent types. 
-!
-! (4) Modularize this code.
+! (3) Modularize this code.
 !===================================================================
 program read_hourly_match 
  
@@ -102,14 +99,14 @@ real :: pt, pb                  ! used in regrid loop - MATCH p layers - top, bo
 real :: asm1(np), nsm1          ! used in regrid loop 
 real :: plast                   ! used in regrid loop - last/previous pressure
 real :: sdpp                    ! sum of (Fu-Liou p-layer thicnkess profile, dpp)
-real :: tta(np), tta_comb(npc)   ! used to combine profiles
-real :: ttt(np)                  ! used to combine profiles
-real :: tts(np)                  ! used to combine profiles
-real :: amr(np)                  ! X = total AOD / total mass
+real :: tta(np), tta_comb(npc)  ! used to combine profiles
+real :: ttt(np)                 ! used to combine profiles
+real :: tts(np)                 ! used to combine profiles
+real :: amr(np)                 ! X = total AOD / total mass
 integer :: icxA(np)             ! pointer to combine constituents
 integer :: icxT(np)             ! pointer to combine constituents   
 integer :: icxS(np)             ! pointer to combine constituents
-real :: ptrop = 200.            ! tropopause pressure, assumed to be 200 mb
+real :: ptrop = 200.            ! tropopause pressure, assume 200 mb
 integer :: ilev_trop            ! Fu-Liou pressure profile tropospause location index
 
 !=============================================== 
@@ -125,6 +122,7 @@ real :: mvp(np,mlev)      ! MATCH 11 aerosol prof on Fu-Liou levels at CERES foo
 real :: mvp_comb(npc,mlev)! MATCH 7  aerosol prof on Fu-Liou levels at CERES footprint
 real :: aods_all(0:np)    ! AODs 11 + tot at CERES footprint
 real :: aods_comb(0:npc)  ! AODs  7 + tot at CERES footprint 
+integer :: ityp_comb(npc) ! Fu-Liou aerosol types
 end type mvptype
 
 type (mvptype) mpro
@@ -169,16 +167,6 @@ data mavp%aero_type7 / &
 'OPAC WASO',  &    ! OCPHI + SO4(tropo)
 'OPAC INSO' /      ! OCPHO
 
-!data aod%aod_type8 / &
-!'Total',   &       ! Total AOD
-!'DustSm',  &       ! Dust small 
-!'DustLg',  &       ! Dust large (med+large)
-!'SO4',     &       ! Sulfate
-!'SSLT',    &       ! Sea Salt
-!'Soot',    &       ! Black carbon
-!'Solub',   &       ! Organic carbon 
-!'Insol' /          ! Organic 
-
 data aod%aod_type12 / &
 'AEROD',     &
 'DSTODX01',  &
@@ -193,29 +181,32 @@ data aod%aod_type12 / &
 'OCPHOOD',   &
 'VOLCOD' /
 
-
-data icxA /1, 2, 2, 2, 0, 4, 5 ,5 ,6, 7, 3/ ! full atmosphere
-data icxT /0, 0, 0, 0, 6, 0, 0 ,0 ,0, 0, 0/ ! troposphere
-data icxS /0, 0, 0, 0, 3, 0, 0 ,0 ,0, 0, 0/ ! stratosphere  
+! pointers for combining profiles
+!          1  2  3  4  5  6  7  8  9 10 11          
+data icxA /1, 2, 2, 2, 0, 4, 5, 5, 6, 7, 3/ ! full atmosphere
+data icxT /0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0/ ! troposphere
+data icxS /0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0/ ! stratosphere  
 
 ! set parameters of Fu-Liou model profile...
 ! location of CERES FOV
 mpro%fovlon = fov_lon
 mpro%fovlat = fov_lat
 
-! specify model # of vertical levels
+! specify # of model vertical levels
 mpro%nv1 = 30
 
 ! specify model pressure levels
 mpro%pp(1:mpro%nv1) =                                &  ! Fu-Liou equivalent ( fi%pp(1:fi%nv +1 )
 (/0.01, 1., 5., 10., 30. ,50., 70.,100.,125.,150.,   &
 175.,200.,250.,300.,350.,400.,450.,500.,550.,600.,   &
-650.,700.,750.,800.,850.,900.,950.,975.,995.,1000./)
+650.,700.,750.,800.,850.,900.,950.,975.,995.,1005./)
 
-!second Fu-Liou test pressure level profile...
+! Test code on multiple Fu-Liou model profiles...
+! second Fu-Liou test pressure level profile...
 !mpro%nv1 = 10
 !mpro%pp(1:mpro%nv1) = (/1., 10., 50., 100., 200., 400., 600., 700., 900., 1000./)
 
+! sfc pressure from lowest Fu-Liou level
 psfc = mpro%pp(mpro%nv1)
 
 !==============================================
@@ -244,11 +235,6 @@ call check( nf90_get_var(ncid,iplayvarid, play) )
 call check( nf90_get_var(ncid,ihybivarid, hybi) )
 call check( nf90_get_var(ncid,ihybmvarid, hybm) )
 
-!********************************************************************************************************
-! dimensions are reversed in the netCDF file - this code is old but left here as an FYI
-!call check( nf90_get_var(ncid, varid1, data3d, start=(/1,1,1/), count=(/nlon,nlat,ntime/) ) )
-!call check( nf90_get_var(ncid, varid2, data4d, start=(/1,1,1,1/), count=(/nlon,nlat,nlev,ntime/) ) )
-!********************************************************************************************************
 
 ! read aerosol arrays
 do i = 1,11
@@ -278,30 +264,18 @@ print*, " Aerosol profiles      (type,nlon,nlat,nlev,ntime) "
 print*, "==================================================="
 
 !print*, "Aerosol profiles at CERES FOV location..."  
-!do t = 1,11                ! aerosol type                                                                                                          
-!   do k = mfov_hr,mfov_hr  ! time 
+!do t = 1,np                ! aerosol type                                                                                                          
+!   do k = 1,1  ! time 
 !      print*, "========================================================================================="                                            
 !      print*, "MATCH Hour:",k, "Type:  ",mavp%aero_type11(t), "VarID:  ",iaodvarid(t)                                                                 
 !      print*, "========================================================================================="                                 
 !      do p=1,nlay          ! pressure layers                                                                                                      
-!         print*, "Lon:", lon(lon_match_ceresfov(fov_lon)),"Lat:", lat(lat_match_ceresfov(fov_lat)), "Pres:",play(p), "Aero:", &                        
-!                         mavp%aero_prof(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,k)                                              
+!         print*, "Lon:", lon(ilon_match_ceresfov(fov_lon)),"Lat:", lat(jlat_match_ceresfov(fov_lat)), "Pres:",play(p), "Aero:", &                        
+!                         mavp%aero_array(t,ilon_match_ceresfov(fov_lon),jlat_match_ceresfov(fov_lat),p,k)                                              
 !      end do                                                                                                                                   
 !   end do                                                                                                                                           
 !end do
 
-!print*, "Printing combined aerosol profiles at CERES FOV location..."                                                                                 
-!do t = 1,7                 ! aerosol type combined                                                                                                    
-!   do k = mfov_hr,mfov_hr  ! time                                                                                                                    
-!      print*, "========================================================================================="                                             
-!      print*, "MATCH Hour:",k, "Type:  ",mavp%aero_type7(t)                                                                                           
-!      print*, "========================================================================================="                                            
-!      do p = 1,nlay        ! pressure layers                                                                                                          
-!         print*, "Lon:", lon(lon_match_ceresfov(fov_lon)),"Lat:", lat(lat_match_ceresfov(fov_lat)), "Pres:",play(p), "Aero:", &                  
-!                         mavp%aero_array7(t,lon_match_ceresfov(fov_lon),lat_match_ceresfov(fov_lat),p,k)                                        
-!      end do                                                                                                                                          
-!   end do                                                                                                                                      
-!end do                                                                                                                                         
 
 !print*, "===================================="
 !print*, "Printing aerosol vertical profiles..."
@@ -321,53 +295,6 @@ print*, "==================================================="
 !     end do
 !  end do
 !end do
-
-!print*, "======================================="
-!print*, "Combining Ed4 aerosol arrays into 7 types...      "
-!print*, "======================================="
-
-! 7 species
-!mavp%aero_array7(1,:,:,:,:) = mavp%aero_array(1,:,:,:,:)                                  ! 1. DustSm = DSTQ01
-!mavp%aero_array7(2,:,:,:,:) = sum(mavp%aero_array(2:4,:,:,:,:),1)                         ! 2. DustLg = DSTQ02+DSTQ03+DSTO4
-!mavp%aero_array7(4,:,:,:,:) = mavp%aero_array(6,:,:,:,:)                                  ! 4. SSLT
-!mavp%aero_array7(5,:,:,:,:) = sum(mavp%aero_array(7:8,:,:,:,:),1)                         ! 5. OPAC SOOT = BCPHI+BCPHO
-!mavp%aero_array7(7,:,:,:,:) = mavp%aero_array(10,:,:,:,:)                                 ! 7. OPAC INSO
-
-! assumes 200 mb tropopause
-!do p=1,nlay
-!  ! stratosphere
-!  if (p <= 10) then
-!    mavp%aero_array7(3,:,:,p,:) = mavp%aero_array(5,:,:,p,:) + mavp%aero_array(11,:,:,p,:) ! 3. OPAC SUSO = SO4(strato)+VOLC
-!    mavp%aero_array7(6,:,:,p,:) = mavp%aero_array(9,:,:,p,:)                              ! 6. OPAC WASO = OCPHI
-!  ! troposphere
-!  else if (p > 10) then
-!    mavp%aero_array7(3,:,:,p,:) = mavp%aero_array(11,:,:,p,:)                             ! 3. OPAC SUSO = VOLC only - 0 in troposphere
-!    mavp%aero_array7(6,:,:,p,:) = mavp%aero_array(9,:,:,p,:) + mavp%aero_array(5,:,:,p,:)  ! 6. OPAC WASO = OCPHI + SO4(tropo)
-!  end if
-!end do
-
-!print*, "Done combining aerosol arrays into new OPAC types..."
-
-!print*, "======================================="
-!print*, "Combining AOD arrays into 7 types + total AOD"
-!print*, "======================================="
-
-! total + 7 species
-!aod%aod_array8(1,:,:,:) = sum(aod%aod_array(2:12,:,:,:),1) ! Total - should equal AEROOD
-!aod%aod_array8(2,:,:,:) = aod%aod_array(2,:,:,:)           ! DustSm
-!aod%aod_array8(3,:,:,:) = sum(aod%aod_array(3:5,:,:,:),1)  ! DustLg
-!aod%aod_array8(4,:,:,:) = aod%aod_array(6,:,:,:)           ! SO4
-!aod%aod_array8(5,:,:,:) = aod%aod_array(7,:,:,:)           ! SSLT - Sea Salt
-!aod%aod_array8(6,:,:,:) = sum(aod%aod_array(8:9,:,:,:),1)  ! SOOT - Black Carbon
-!aod%aod_array8(7,:,:,:) = aod%aod_array(10,:,:,:)          ! Solub
-!aod%aod_array8(8,:,:,:) = aod%aod_array(11,:,:,:)          ! Insolub
-
-! This checks out to ~4 decimal places
-! Printing out only 10 numbers...
-!print*, "Computed total AOD"
-!print*, aod%aod_array8(1,1:10,1,1)
-!print*, "Read from file"
-!print*, aod%aod_array(1,1:10,1,1)
 
 !print*, "======================================="
 
@@ -430,38 +357,6 @@ do t = 0,np          !indicies... aod%aod_array(1:12) but want mpro%aods_all(0:1
    mpro%aods_all(t) = aod%aod_array(t+1,ilon_match_ceresfov(fov_lon),jlat_match_ceresfov(fov_lat),mfov_hr)
 end do
  
-!print*, "======================================================="
-!print*, "Combining raw MATCH aerosol profiles at CERES FOV...   "
-!print*, "======================================================="
-
-! 7 species                                                                                                                                            
-!mavp%aero_profs7(1,:) = mavp%aero_profs(1,:)                                  ! 1. DustSm = DSTQ01                                       
-!mavp%aero_profs7(2,:) = sum(mavp%aero_profs(2:4,:),1)                         ! 2. DustLg = DSTQ02+DSTQ03+DSTO4                           
-!mavp%aero_profs7(4,:) = mavp%aero_profs(6,:)                                  ! 4. SSLT                                                   
-!mavp%aero_profs7(5,:) = sum(mavp%aero_profs(7:8,:),1)                         ! 5. OPAC SOOT = BCPHI+BCPHO                              
-!mavp%aero_profs7(7,:) = mavp%aero_profs(10,:)                                 ! 7. OPAC INSO
-
-! assumes 200 mb tropopause                                                                                                                              
-!do p=1,nlay                                                                                                                                             
-  ! stratosphere                                                                                                                                      
-!  if (p <= 10) then                                                                                                                                     
-!    mavp%aero_profs7(3,p) = mavp%aero_profs(5,p) + mavp%aero_profs(11,p) ! 3. OPAC SUSO = SO4(strato)+VOLC                            
-!    mavp%aero_profs7(6,p) = mavp%aero_profs(9,p)                         ! 6. OPAC WASO = OCPHI                                        
-!  ! troposphere                                                                                                                                         
-!  else if (p > 10) then                                                                                                                                 
-!    mavp%aero_profs7(3,p) = mavp%aero_profs(11,p)                        ! 3. OPAC SUSO = VOLC only - 0 in troposphere                 
-!    mavp%aero_profs7(6,p) = mavp%aero_profs(9,p) + mavp%aero_profs(5,p)  ! 6. OPAC WASO = OCPHI + SO4(tropo)                          
-!  end if                                                                                                                                                
-!end do 
-
-!print*, "======================================================================================================================"
-!print*, "      DustSm           DustLg         OPAC SUSO           SSLT          OPAC SOOT        OPAC WASO        OPAC INSO"
-!print*, "======================================================================================================================"
-!do p = 1,nlay
-!   write(*,*) ( mavp%aero_profs7(t,p), t=1,7 )
-!end do
-!print*, "======================================================================================================================"
-
 print*, "================================================================="
 print*, "Aerosol profiles on native MATCH pressure layers (showing 1-9)..."
 print*, "================================================================="
@@ -477,7 +372,7 @@ print*, "======================================================================"
 mpro%mvp = 0.0
 plast = 0.0                         ! mpro%pp(1) <- TOA
 
-OUTLEV : do i = 1,mpro%nv1-1        ! loop over Fu-Liou model levels starting at TOA
+OUTLEV : do i = 1,mpro%nv1-1        ! loop over Fu-Liou model layers starting at TOA
             p1 = mpro%pp(i)         ! p1 < p2 
             p2 = mpro%pp(i+1)       ! p2
             dpp(i) = p2-p1          ! calculate pressure layer thickness profile
@@ -509,36 +404,32 @@ INLEV  : do k = 1,nlay              ! loop over MATCH layers starting at TOA
 
             plast = plast + dp ! increment plast by dp
 
-            asm1(1:np) = asm1(1:np) + mavp%aero_profs(1:np,k)*dp ! for all constituents, multiply by dp at each level
+            ! compute weighted avg
+            asm1(1:np) = asm1(1:np) + mavp%aero_profs(1:np,k)*dp ! for all constituents, multiply by dp thickness
             nsm1 = nsm1+dp
 
             end if
 
 end do INLEV
 
-            ! assign aerosol value to Fu-Liou model level
+            ! assign aerosol value to Fu-Liou model layer
             if( nsm1 > 0 ) mpro%mvp(1:np,i) =  asm1(1:np)/ nsm1
 
 end do OUTLEV
 
 
-! print the resulting profiles on Fu-Liou model levels
-! note: surface level aerosol mixing ratio = 0
-do p = 1,mpro%nv1
+! print the resulting profiles on Fu-Liou model layers
+do p = 1,mpro%nv1-1
    write(*,*) ( mpro%mvp(t,p), t=1,9)
 end do
 
 
 print*, "================================================================="
-print*, "Aerosol profiles (showing 1-9) converted to AOT..."
+print*, "Aerosol profiles converted to AOT (showing 1-9)..."
 print*, "================================================================="
 
-!print*, dpp
-
-!normalize Fu-Liou dpp profile by TOA-surface p difference
+! normalize Fu-Liou dpp profile by TOA-surface p difference
 dpp(1:mpro%nv1-1) = dpp(1:mpro%nv1-1)/sum(dpp(1:mpro%nv1-1))  ! can comment out with no effect... why?
-
-!print*, dpp
 
 ! do for all aerosol (t)ypes...
 do t=1,np
@@ -550,47 +441,44 @@ do t=1,np
    amr(t) = mpro%aods_all(t)/sum( mpro%mvp(t, 1:mpro%nv1-1 ) )
 
    ! multiply profile by 'X' to get AOD profile
-   if ( amr(t) > 0 ) mpro%mvp_aod(t, 1:mpro%nv1-1 ) = mpro%mvp(t, 1:mpro%nv1-1 )* amr(t)
+   if (amr(t) > 0) mpro%mvp(t, 1:mpro%nv1-1 ) = mpro%mvp(t, 1:mpro%nv1-1 )* amr(t)
 
 end do
 
-
 ! print the resulting AOD profiles
-do p = 1,mpro%nv1
+do p = 1,mpro%nv1-1
    write(*,*) (mpro%mvp(t,p), t=1,9) ! just showing 9 since it fits on my small screen                                                                
 end do
 
-
-print*, "========================================"
-print*, "Combining aerosol profiles..."
-print*, "========================================"
+print*, "=============================================================="
+print*, "Comparing 11 AODs (i) sum AOD profiles (ii) MATCH... "
+print*, "=============================================================="
 
 ! retrieve index of Fu-Liou tropopause (assuming p = 200mb)
-do i =1,mpro%nv1     
+do i =1,mpro%nv1-1     
    if ( mpro%pp(i) >= ptrop ) exit
       ilev_trop = i
 end do
 
 tta_comb = 0
-tta = 0
-ttt = 0
-tts = 0
+tta = 0          ! total thickness - atmosphere
+ttt = 0          ! total thickness - troposphere
+tts = 0          ! total thickness - stratosphere
 
 mpro%mvp_comb  = 0
 mpro%aods_comb = 0
-mpro%aods_comb (0) = mpro%aods_all(0)  ! total AOD is the same
-
+mpro%aods_comb(0) = mpro%aods_all(0)  ! total AOD
 
 
 do t = 1,np
 
    ! AOD for each atmospheric layer
-   tta(t) = sum( mpro%mvp(t, 1:mpro%nv1-1 )  )          ! full atmospheric profile
-   tts(t) = sum( mpro%mvp(t, 1:ilev_trop )  )           ! stratosphere                                                                                 
-   ttt(t) = sum( mpro%mvp(t, ilev_trop+1:mpro%nv1-1 ) ) ! troposphere                                                                          
+   tta(t) = sum( mpro%mvp(t, 1:mpro%nv1-1 )  )          ! sum over full atmospheric profile
+   tts(t) = sum( mpro%mvp(t, 1:ilev_trop )  )           ! sum over stratospheric portion                            
+   ttt(t) = sum( mpro%mvp(t, ilev_trop+1:mpro%nv1-1 ) ) ! sum over tropospheric portion                                                                 
    
-   ! these values should match 
-   ! print*, tta(t), mpro%aods_all(t)
+   ! these values should be equal
+   print*, tta(t), mpro%aods_all(t)
 
    if ( icxA(t) > 0 .and. tta(t) > 0 ) then
       tta_comb( icxA(t) ) = tta_comb( icxA(t) ) + tta(t)
@@ -615,52 +503,49 @@ do t = 1,np
 
 end do
 
-   do p = 1, mpro%nv1-1
-      mpro%mvp(1:np,p)       = 100.*mpro%mvp     (1:np,p )/ tta(1:np)
-      mpro%mvp_comb(1:npc,p) = 100.*mpro%mvp_comb(1:npc,p)/ tta_comb(1:npc)
-   enddo
+
+! renormalize profiles by total AOD and convert to percentages
+! this allows division by zero, which yields NaN values...
+!do k = 1, mpro%nv1-1 
+!   mpro%mvp(1:np,k)       = 100*mpro%mvp     (1:np,k ) / tta(1:np)
+!   mpro%mvp_comb(1:npc,k) = 100*mpro%mvp_comb(1:npc,k) / tta_comb(1:npc)
+!end do
+
+! renormalize profiles by total AOD and convert to percentages
+! ...but don't divide by zero...
+do t = 1,np
+   do k = 1,mpro%nv1-1
+      if (tta(t)>0) mpro%mvp(t,k) = 100*mpro%mvp(t,k) / tta(t)
+   end do
+end do
+
+do t = 1,npc
+   do k = 1,mpro%nv1-1
+      if (tta_comb(t)>0) mpro%mvp_comb(t,k) = 100*mpro%mvp_comb(t,k) / tta_comb(t)
+   end do
+end do
 
 
+! get combined AODs
+mpro%aods_comb (1:npc) = mpro%aods_comb (1:npc)
+mpro%aods_comb (0)     = sum(mpro%aods_comb(1:npc))
+
+mpro%ityp_comb(1:npc) =  (/ 24, 25, 18, 1, 11, 10, 9 /) ! Fu-Liou aerosol types
 
 print*, "======================================================================================================================"
 print*, "      DustSm           DustLg         OPAC SUSO           SSLT          OPAC SOOT        OPAC WASO        OPAC INSO"
 print*, "======================================================================================================================"
 
-do p = 1,mpro%nv1
+do p = 1,mpro%nv1-1
    write(*,*) ( mpro%mvp_comb(t,p), t=1,npc)
 end do
 
-!print*, "======================================================="
-!print*, "Combining Fu-Liou-gridded MATCH aerosol profiles       "
-!print*, "======================================================="
-
-! 7 species                          
-!mpro%mvp(1,:) = mpro%mvp(1,:)                               ! 1. DustSm = DSTQ01
-!mpro%mvp(2,:) = sum(mpro%mvp(2:4,:),1)                      ! 2. DustLg = DSTQ02+DSTQ03+DSTO4
-!mpro%mvp(4,:) = mpro%mvp(6,:)                               ! 4. SSLT
-!mpro%mvp(5,:) = sum(mpro%mvp(7:8,:),1)                      ! 5. OPAC SOOT = BCPHI+BCPHO
-!mpro%mvp(7,:) = mpro%mvp(10,:)                              ! 7. OPAC INSO
-                                                   
-! assumes 200 mb tropopause                                                       
-!do p=1,mpro%nv1-1
-!  ! stratosphere
-!   if (p <= ilev_trop) then                                                                                                    
-!      mpro%mvp(3,p) = mpro%mvp(5,p) + mpro%mvp(11,p)        ! 3. OPAC SUSO = SO4(strato) + VOLC
-!      mpro%mvp(6,p) = mpro%mvp(9,p)                         ! 6. OPAC WASO = OCPHI
-!  ! troposphere                                                                            
-!  else if (p > ilev_trop) then
-!     mpro%mvp(3,p) = mpro%mvp(11,p)                         ! 3. OPAC SUSO = VOLC only - 0 in troposphere
-!     mpro%mvp(6,p) = mpro%mvp(9,p) + mpro%mvp(5,p)          ! 6. OPAC WASO = OCPHI + SO4(tropo)
-!  end if
-!end do                                       
-                                                                
-!print*, "======================================================================================================================"
-!print*, "      DustSm           DustLg         OPAC SUSO           SSLT          OPAC SOOT        OPAC WASO        OPAC INSO"
-!print*, "======================================================================================================================"
-!do p = 1,mpro%nv1
-!   write(*,*) ( mpro%mvp(t,p), t=1,npc )  
-!end do
-
+print*, "================================================="
+print*, "Checking to ensure each profile sums to 100 % ..."
+print*, "================================================="
+do t = 1,npc
+   write(*,*) sum(mpro%mvp_comb(t,1:mpro%nv1-1))
+enddo
 
 
 
