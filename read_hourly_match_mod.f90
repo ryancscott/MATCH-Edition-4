@@ -1,19 +1,19 @@
 !=================================================================== 
 !
-! Name:    MATCH_Ed4_rcs.f90
+! Name:    MATCH_Ed4.f90
 !
-! Purpose: This program reads vertical aerosol profiles (kg/kg) and
+! Purpose: This program reads aerosol vertical profiles (kg/kg) and
 !          aerosol optical depth information from daily, hourly res
-!          MATCH netCDF files for 11 aerosol constituents. First raw
-!          data are matched in time and space and extracted at the
+!          MATCH netCDF files for 11 aerosol constituents. The raw
+!          data are matched in time & space and extracted at the
 !          location of CERES footprints. Profiles are regridded from
 !          MATCH to Fu-Liou pressure layers and then converted into
 !          AOD profiles for Fu-Liou CRS radiant flux calculations.
 !
-! Modules: netcdf
+! Modules: netcdf (soon: pcf)
 !
 ! Author:  Ryan Scott, SSAI, ryan.c.scott@nasa.gov
-! Updated: March 2, 2020
+! Updated: March 3, 2020
 !
 !===================================================================
 ! To do:
@@ -21,17 +21,16 @@
 ! (0) Figure out how to compile this script on AMI...
 ! 
 ! (1) Instead of reading MATCH file from local dir, read the data 
-!     from appropriate ASDC_archive dir on AMI. To do this, need to
-!     use pcf module, etc. Fred can help w/ these ins and outs... 
+!     from appropriate ASDC_archive dir on AMI. To do this, use PCF
+!     module. Fred can help w/ this.
 !
-! (2) Read SSF data directly instead of using artificial values here
-!
-! (3) Read Fu-Liou model levels
+! (2) Read SSF data directly instead of using artificial inputs.
+!     Similarly, read Fu-Liou model levels accompanying SSF FOV.
 !
 !===================================================================
-program MATCH_Ed4_rcs
+program MATCH_Ed4 !(convert to a module)
  
-! use netcdf module - see README for local machine compilation instructions
+! use netcdf module - see README for compilation instructions on local machine
 use netcdf
 
 ! no implicit variables
@@ -46,17 +45,17 @@ integer, parameter :: nlat = 94    ! number of latitude boxes
 integer, parameter :: ntime = 24   ! number of hourly time steps
 integer, parameter :: nlay = 28    ! number of pressure layers
 integer, parameter :: nlev = nlay+1! number of pressure levels
-integer, parameter :: np = 11      ! number of particle constituents
-integer, parameter :: npc = 7      ! number of particle constituents combined
+integer, parameter :: np = 11      ! number of particlate constituents
+integer, parameter :: npc = 7      ! number of particlate constituents - combined
 !real :: lon(nlon)                  ! MATCH grid box lon
 !real :: lat(nlat)                  ! MATCH grid box lat
 real :: play(nlay), plev(nlev)     ! MATCH pressure layers, levels
 real :: hybi(nlev), hybm(nlay)     ! MATCH sigma coordinates for levels & layer midpoints
 
 ! IDs for file & select variables
-integer :: iplayvarid, iplevvarid  ! integer pressure lay/lev variable IDs
-integer :: ihybivarid, ihybmvarid  ! integer sigma coord variable IDs
-integer :: ilatvarid, ilonvarid    ! integer lat/lon variable IDs
+integer :: iplayvarid, iplevvarid  ! integer pressure layer, level variable IDs
+integer :: ihybivarid, ihybmvarid  ! integer sigma coordinate variable IDs
+integer :: ilatvarid, ilonvarid    ! integer latitude, longitude variable IDs
 integer :: iprofvarid(1:np)        ! integer aerosol profile variable ID, 11 aerosol types                                 
 integer :: iaodvarid(1:np+1)       ! integer aerosol OD variable ID
 
@@ -70,7 +69,7 @@ real :: aero_array(np,nlon,nlat,nlay,ntime)  ! aerosol array, types 1-11
 character*7 aero_type11(np)                  ! aerosol type label, 11 constituents
 character*10 aero_type7(npc)                 ! aerosol type label, 7 constituents obtained by combining categories
 real :: aero_profs(np,nlay)                  ! aerosol profiles extracted at CERES FOV LAT/LON/HR
-real :: aero_profs7(npc,nlay)                ! aerosol profiles extracted at CERES FOV LAT/LON/HR, combined into 7 categories
+!real :: aero_profs7(npc,nlay)                ! aerosol profiles extracted at CERES FOV LAT/LON/HR, combined into 7 categories
 end type mavptype
 
 type (mavptype) mavp                         ! MATCH aerosol vertical profile data structure variable
@@ -129,7 +128,7 @@ type (mvptype) mpro
 real :: fov_lon       ! CERES FOV longitude
 real :: fov_lat       ! CERES FOV latitude
 integer :: fov_hr     ! CERES swath hour
-integer :: mfov_hr    ! match fov hr = ceres fov hr + 1
+integer :: match_hr   ! match hr = ceres fov hr + 1
 
 !================================================
 
@@ -148,13 +147,13 @@ data mavp%aero_type11 / &
 'VOLC' /           !11 Volcanic
 
 data mavp%aero_type7 / &
-'DustSm',     &    ! DSTQ01
-'DustLg',     &    ! DSTQ02+DSTQ03+DSTQ04
-'OPAC SUSO',  &    ! VOLC + SO4(strato)
-'SSLT',       &    ! d'Almedia maritime
-'OPAC SOOT',  &    ! BCPHI+BCPHO
-'OPAC WASO',  &    ! OCPHI + SO4(tropo)
-'OPAC INSO' /      ! OCPHO
+'DustSm',     &    ! DSTQ01               (small dust)
+'DustLg',     &    ! DSTQ02+DSTQ03+DSTQ04 (large dust)
+'OPAC SUSO',  &    ! VOLC + SO4(strato)   (OPAC SUSO)
+'SSLT',       &    ! d'Almedia maritime   (sea salt)
+'OPAC SOOT',  &    ! BCPHI+BCPHO          (OPAC SOOT)
+'OPAC WASO',  &    ! OCPHI + SO4(tropo)   (OPAC WASO)
+'OPAC INSO' /      ! OCPHO                (OPAC INSO)
 
 data aod%aod_type12 / &
 'AEROD',     &
@@ -170,8 +169,8 @@ data aod%aod_type12 / &
 'OCPHOOD',   &
 'VOLCOD' /
 
-! pointers for combining profiles
-!          1  2  3  4  5  6  7  8  9 10 11          
+! pointers for combining aerosol data
+! types    1  2  3  4  5  6  7  8  9 10 11
 data icxA /1, 2, 2, 2, 0, 4, 5, 5, 6, 7, 3/ ! full atmosphere
 data icxT /0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0/ ! troposphere
 data icxS /0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0/ ! stratosphere
@@ -234,32 +233,33 @@ mpro%pp(1:mpro%nv1) =                                &  ! Fu-Liou equivalent ( f
 175.,200.,250.,300.,350.,400.,450.,500.,550.,600.,   &
 650.,700.,750.,800.,850.,900.,950.,975.,995.,1005./)
 
-! Test code on multiple Fu-Liou model profiles...
-! second Fu-Liou test pressure level profile...
+! Another Fu-Liou pressure level profile for testing...
+! Uncomment the next two lines to overwrite the above definitions
+
 !mpro%nv1 = 10
 !mpro%pp(1:mpro%nv1) = (/1., 10., 50., 100., 200., 400., 600., 700., 900., 1000./)
 
 ! sfc pressure from lowest Fu-Liou level
 psfc = mpro%pp(mpro%nv1)
 
-!==============================================
+!=========================================================
 
-! call subroutines to accomplish necessary tasks...
+! call subroutines
 
-call read_ceres_fov
+call read_ceres_fov                ! input CERES footprint geolocation and swath hour
 
-call ingest_match_aerosol_arrays
+call ingest_match_aerosol_arrays   ! read aerosol arrays
 
-call match_with_ceres_fov          ! CERES lat,lon,hour must be specified for this to work
+call match_with_ceres_fov          ! co-locate in time/space: CERES lat, lon, hr must be specified!
 
-call regrid_from_match_to_fu
+call regrid_from_match_to_fu       ! regrid the data from MATCH to Fu-Liou layers
 
-call convert_profiles_to_aot
+call convert_profiles_to_aot       ! convert the profiles into AOD
  
-call combine_aero_profiles
+call combine_aero_profiles         ! combine profiles into Fu-Liou-required form
 
 
-!================================================================
+!==========================================================
 
 contains
 
@@ -391,7 +391,7 @@ print*, "Getting MATCH aerosol profiles/AOD at CERES FOV...     "
 print*, "======================================================="
 
 ! CERES FOV hr is offset from MATCH by 1 hr
-mfov_hr = fov_hr + 1
+match_hr = fov_hr + 1
 
 print*, "Artificial CERES Hour   :", fov_hr
 print*, "Artificial CERES FOV Lon:", fov_lon
@@ -409,13 +409,13 @@ print*, "======================================================="
 ! aerosol profiles
 do t = 1,np       ! aerosol (t)ypes
    do p = 1,nlay  ! (p)ressure layers         ! call functions that extract MATCH data at the CERES FOV
-      mavp%aero_profs(t,p) = mavp%aero_array(t,ilon_match_ceresfov(fov_lon),jlat_match_ceresfov(fov_lat),p,mfov_hr)
+      mavp%aero_profs(t,p) = mavp%aero_array(t,ilon_match_ceresfov(fov_lon),jlat_match_ceresfov(fov_lat),p,match_hr)
    end do
 end do
 
 ! aerosol optical depth (index 0 refers to total AOD)
 do t = 0,np          !indicies... aod%aod_array(1:12) but want mpro%aods_all(0:11)
-   mpro%aods_all(t) = aod%aod_array(t+1,ilon_match_ceresfov(fov_lon),jlat_match_ceresfov(fov_lat),mfov_hr)
+   mpro%aods_all(t) = aod%aod_array(t+1,ilon_match_ceresfov(fov_lon),jlat_match_ceresfov(fov_lat),match_hr)
 end do
 
 print*, "================================================================="
@@ -447,21 +447,21 @@ print*, "Aerosol profiles regridded to Fu-Liou pressure levels (showing 1-9)..."
 print*, "======================================================================"
 
 mpro%mvp = 0.0
-plast = 0.0                         ! mpro%pp(1) <- TOA
+plast = 0.0                       ! mpro%pp(1) <- TOA
 
-OUTLEV : do i = 1,mpro%nv1-1        ! loop over Fu-Liou model layers starting at TOA
-            p1 = mpro%pp(i)         ! p1 < p2
-            p2 = mpro%pp(i+1)       ! p2
-            dpp(i) = p2-p1          ! calculate pressure layer thickness profile
+OUTLEV : do i = 1,mpro%nv1-1      ! loop over Fu-Liou model layers starting at TOA
+            p1 = mpro%pp(i)       ! p1 < p2
+            p2 = mpro%pp(i+1)     ! p2
+            dpp(i) = p2-p1        ! calculate pressure layer thickness profile
 
             asm1=0
             nsm1=0
 
-            hybi(1) = 0.00          ! TOA at zero pressure
+            hybi(1) = 0.00        ! TOA at zero pressure
 
-INLEV  : do k = 1,nlay              ! loop over MATCH layers starting at TOA
-            pt = hybi(k)*psfc       ! p-top = MATCH sigma level * Fu-Liou psfc
-            pb = hybi(k+1)*psfc     ! p-bottom = next MATCH sigma level * Fu-Liou psfc
+INLEV  : do k = 1,nlay            ! loop over MATCH layers starting at TOA
+            pt = hybi(k)*psfc     ! p-top = MATCH sigma level * Fu-Liou psfc
+            pb = hybi(k+1)*psfc   ! p-bottom = next MATCH sigma level * Fu-Liou psfc
 
             if ( k .eq. nlay)  pb = psfc  ! p-bottom = psfc at end of profile
             dp = 0
@@ -474,12 +474,12 @@ INLEV  : do k = 1,nlay              ! loop over MATCH layers starting at TOA
                
             dp = pb - plast
                                                                                                                    
-            if ( dp == 0 ) cycle  ! exit INLEV do loop
+            if ( dp == 0 ) cycle   ! exit INLEV do loop
             
             ! if Fu-Liou < MATCH pressure
             if ( p2 < pb ) dp = p2 - plast
 
-            plast = plast + dp ! increment plast by dp
+            plast = plast + dp     ! increment plast by dp
 
             ! compute weighted avg
             asm1(1:np) = asm1(1:np) + mavp%aero_profs(1:np,k)*dp ! for all constituents, multiply by dp thickness
@@ -577,7 +577,7 @@ mpro%aods_comb(0) = mpro%aods_all(0)  ! total AOD
 
 do t = 1,np
 
-   ! AOD for each atmospheric layer
+   ! AOD of each atmospheric layer
    tta(t) = sum( mpro%mvp(t, 1:mpro%nv1-1 )  )          ! sum over full atmospheric profile
    tts(t) = sum( mpro%mvp(t, 1:ilev_trop )  )           ! sum over stratospheric portion
    ttt(t) = sum( mpro%mvp(t, ilev_trop+1:mpro%nv1-1 ) ) ! sum over tropospheric portion
@@ -609,7 +609,7 @@ do t = 1,np
 end do
 
 
-! renormalize profiles by total AOD and convert to percentages
+! renormalize profiles by total AOD and convert to %
 ! ...but don't divide by zero...
 do t = 1,np
    do k = 1,mpro%nv1-1
@@ -627,7 +627,8 @@ end do
 mpro%aods_comb(1:npc) = mpro%aods_comb(1:npc)
 mpro%aods_comb(0)     = sum(mpro%aods_comb(1:npc))
 
-mpro%ityp_comb(1:npc) =  (/ 24, 25, 18, 1, 11, 10, 9 /) ! Fu-Liou aerosol types
+! Fu-Liou aerosol types
+mpro%ityp_comb(1:npc) =  (/ 24, 25, 18, 1, 11, 10, 9 /)
 
 
 print*, "======================================================================================================================"
@@ -698,7 +699,7 @@ end function jlat_match_ceresfov
 
 !********************************************************** 
 
-end program MATCH_Ed4_rcs
+end program MATCH_Ed4
 
 
 
