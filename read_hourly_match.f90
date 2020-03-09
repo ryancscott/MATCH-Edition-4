@@ -59,6 +59,15 @@ integer :: ilatvarid, ilonvarid    ! integer lat/lon variable IDs
 integer :: iprofvarid(1:np)        ! integer aerosol profile variable ID, 11 aerosol types                                 
 integer :: iaodvarid(1:np+1)       ! integer aerosol OD variable ID
 
+integer :: ilatdimid, ilondimid, iplaydimid, iplevdimid, itimedimid
+integer :: latlen, lonlen, playlen, plevlen, timelen
+character*10 :: latname
+character*10 :: lonname
+character*10 :: playname
+character*10 :: plevname
+character*10 :: timename
+
+
 integer :: ncid                    ! netCDF (nc) file ID
 integer :: i, j, p, k, t           ! array loop indices - lon, lat, lay, hr, type
 
@@ -120,6 +129,7 @@ real :: pp(mlev)          ! pressure profile levels
 real :: dpp(mlev-1)       ! pressure layer thickness profile
 real :: mvp(np,mlev)      ! MATCH 11 aerosol prof on Fu-Liou levels at CERES footprint
 real :: mvp_comb(npc,mlev)! MATCH 7  aerosol prof on Fu-Liou levels at CERES footprint
+real :: mvp_comb1(mlev,npc)
 real :: aods_all(0:np)    ! AODs 11 + tot at CERES footprint
 real :: aods_comb(0:npc)  ! AODs  7 + tot at CERES footprint 
 integer :: ityp_comb(npc) ! Fu-Liou aerosol types
@@ -221,6 +231,31 @@ call check( nf90_inq_varid(ncid, "ilev", iplevvarid) ) ! lev var id - nc files p
 call check( nf90_inq_varid(ncid, "lev" , iplayvarid) ) ! lay var id
 call check( nf90_inq_varid(ncid, "hybi", ihybivarid) ) ! hybi var id - lev
 call check( nf90_inq_varid(ncid, "hybm", ihybmvarid) ) ! hybm var id - lay
+
+
+call check( nf90_inq_dimid(ncid, "lon",ilondimid) ) 
+call check( nf90_inq_dimid(ncid, "lat",ilatdimid) ) 
+call check( nf90_inq_dimid(ncid, "lev",iplaydimid))
+call check( nf90_inq_dimid(ncid,"ilev",iplevdimid))
+call check( nf90_inq_dimid(ncid,"time",itimedimid))
+
+print*,"lat dim id", ilatdimid
+print*,"lon dim id", ilondimid
+print*,"lev dim id", iplaydimid
+print*,"ilevdim id", iplevdimid
+print*,"timedim id", itimedimid
+
+call check( nf90_inquire_dimension(ncid, ilondimid, lonname, lonlen) )
+call check( nf90_inquire_dimension(ncid, ilatdimid, latname, latlen) )
+call check( nf90_inquire_dimension(ncid,iplaydimid,playname,playlen) )
+call check( nf90_inquire_dimension(ncid,iplevdimid,plevname,plevlen) )
+call check( nf90_inquire_dimension(ncid,itimedimid,timename,timelen) )
+
+print*, "Latitude Name:", latname, "Latitude Length:", latlen
+print*, "Longitude Name:", lonname, "Longitude Length:", lonlen
+print*, "P Layer Name: ", playname, "P Layer Length:", playlen
+print*, "P Level Name: ", plevname, "P Level Length:", plevlen
+print*, "Time/Hr Name: ", timename, "Time Length: " , timelen
 
 ! print nc file and variable ids
 print*, "===================================="
@@ -548,6 +583,14 @@ do t = 1,npc
 enddo
 
 
+do k = 1,nlay
+   do t = 1,npc
+      mpro%mvp_comb1(k,t) = mpro%mvp_comb(t,k)
+   end do
+end do
+
+
+write(*,*) size(mpro%mvp_comb1,1), size(mpro%mvp_comb1,2)
 
 !================================================================
 
